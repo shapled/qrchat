@@ -1,8 +1,7 @@
 import { json, type LoaderFunction, type MetaFunction } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import { useEffect, useState } from "react";
-import { searchPeerServerID } from "~/store/db.server";
-import { Commands, Description } from "../common/apiv1.server";
+import { Commands, Description, fetchResult } from "../common/apiv1";
 
 export const meta: MetaFunction = () => {
   return [
@@ -21,11 +20,7 @@ export const loader: LoaderFunction = ({
   request,
 }) => {
   const url = new URL(request.url);
-  const sid = url.searchParams.get("sid");
-  if (!sid) { return json({}) }
-  const desc = searchPeerServerID(sid);
-  if (!desc) { return json({ warning: `No such peer server id ${sid}` }) }
-  return json({ sid, desc });
+  return json({ sid: url.searchParams.get("sid") });
 };
 
 type ChatMessage = {
@@ -41,72 +36,80 @@ const configuration = {
 
 const ServerPage = () => {
   const [sid, setSid] = useState("")
+  const [warning, setWarning] = useState("")
   const [sendMessage, setSendMessage] = useState<((message: string) => void) | undefined>(undefined)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState('');
 
-  useEffect(() => {
-    const waitForConnection = async (peerID: string, callback: (desc: Description) => void) => {
-      const response = await fetch(`/apiv1/${Commands.GetPeerClient}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sid: peerID }),
-      });
-  
-      if (response.status == 502) {
-        await waitForConnection(peerID, callback);
-      } else if (response.status != 200) {
-        console.log("error:", response.statusText);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await waitForConnection(peerID, callback);
-      } else {
-        const data = await response.json()
-        callback(data.desc);
-      }
-    }
+  const appendMessage = (direction: "send" | "receive", message: string) => {
+    setMessages(messages => [{ message, direction }, ...messages])
+  }
 
+  useEffect(() => {
     const localConnection = new RTCPeerConnection(configuration);
     const sendChannel = localConnection.createDataChannel("sendChannel");
+
     sendChannel.onopen = (event) => {
       console.log('handleSendChannelStatusChange:', sendChannel.readyState, event)
     };
+
     sendChannel.onclose = (event) => {
       console.log('handleSendChannelStatusChange:', sendChannel.readyState, event)
     };
-    sendChannel.onmessage = (event)=>{
-          console.log('event.data',event.data)
-    }
-  
-    localConnection.onicecandidate = (e) =>{
-      console.log('a on ice candidate',e)
+
+    sendChannel.onmessage = (event) => {
+      appendMessage("receive", event.data as string);
     }
   
     localConnection
       .createOffer()
       .then((offer) => localConnection.setLocalDescription(offer))
-      .then(() => fetch(`/apiv1/${Commands.SetPeerServer}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ desc: localConnection.localDescription }),
-      }))
-      .then(resp => resp.json())
+      .then(() => fetchResult(Commands.emitServerInit, { desc: localConnection.localDescription }))
       .then(data => {
+        let done = false;
+
         setSid(data.sid);
-        waitForConnection(data.sid, (desc) => {
-          localConnection.setRemoteDescription(desc as RTCSessionDescription)
-          setSendMessage(() => ((message: string) => {
-            if (message) {
-              sendChannel.send(message);
+
+        localConnection.onicecandidate = (e) => {
+          if (e.candidate) {
+            fetchResult(Commands.emitServerIceCandidate, { sid: data.sid, candidate: e.candidate })
+              .catch((error) => { setWarning(`Unable to emit server ice candidate event: ${error.toString()}`); })
+          }
+        }
+
+        (async () => {
+          while (!done) {
+            try {
+              const result = await fetchResult(Commands.awaitClientIceCandidate, { sid: data.sid })
+              result.candidates.map((candidate: RTCIceCandidate) => localConnection.addIceCandidate(candidate))
+            } catch (error) {
+              console.log("Unable to await client ice candidate event:", error);
             }
-          }))
-        })
+          }
+        })()
+
+        fetchResult(Commands.awaitDone, { sid: data.sid })
+          .then(() => done = true)
+          .catch((error) => { console.log("ignore awaitDone error:", error) })
+
+        fetchResult(Commands.awaitClientAnswer, { sid: data.sid })
+          .then((data) => {
+            console.log("remote desc data: ", data)
+            localConnection.setRemoteDescription(data.desc as RTCSessionDescription)
+            setSendMessage(() => ((message: string) => {
+              if (message) {
+                setInputValue("");
+                appendMessage("send", message);
+                sendChannel.send(message);
+              }
+            }))
+          })
+          .catch((error) => {
+            setWarning(`Unable to set remote desc: ${error.toString()}`);
+          });
       })
       .catch((error) => {
-        console.log(`Unable to create an offer: ${error.toString()}`);
+        setWarning(`Unable to create an offer: ${error.toString()}`);
       });
     
     return () => {
@@ -117,6 +120,7 @@ const ServerPage = () => {
   return (
     <div>
       <h1>Server Page</h1>
+      {warning && <div>some errors: {warning}</div>}
       {messages.map((message, index) => (
         <div key={index}>
           <div>{message.direction === "send" ? "我" : "对方"}</div>
@@ -139,10 +143,10 @@ const ServerPage = () => {
 
 type ClientPageProps = {
   sid: string;
-  desc: Description;
 }
 
 const ClientPage = (props: ClientPageProps) => {
+  const [warning, setWarning] = useState("")
   const [sendMessage, setSendMessage] = useState<((message: string) => void) | undefined>(undefined)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState('');
@@ -152,11 +156,10 @@ const ClientPage = (props: ClientPageProps) => {
   }
 
   useEffect(() => {
+    let done = false;
+    let cid = 0;
+    const sid = props.sid;
     const localConnection = new RTCPeerConnection(configuration);
-  
-    localConnection.onicecandidate = (e) =>{
-      console.log('a on ice candidate',e)
-    }
   
     localConnection.ondatachannel = (event)=>{
       const receiveChannel = event.channel
@@ -171,38 +174,68 @@ const ClientPage = (props: ClientPageProps) => {
           console.log(`Receive channel's status has changed to ${receiveChannel.readyState}`);
         }
       };
+
+      done = true;
+      fetchResult(Commands.emitDone, { sid: props.sid, cid })
+        .catch((error) => { setWarning(`Unable to emit done event: ${error.toString()}`); })
+
       setSendMessage(() => ((message: string) => {
         if (message) {
+          setInputValue("");
+          appendMessage("send", message);
           receiveChannel.send(message)
         }
       }))
     }
-  
-    localConnection.setRemoteDescription(props.desc as RTCSessionDescription)
-      .then(() => localConnection.createAnswer())
-      .then(answer => localConnection.setLocalDescription(answer))
-      .then(() => fetch(`/apiv1/${Commands.SetPeerClient}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          sid: props.sid,
-          desc: localConnection.localDescription,
-        }),
-      }))
-      .catch((error) => {
-        console.log(`Unable to create an offer: ${error.toString()}`);
-      });
+
+    fetchResult(Commands.emitClientInit, { sid: props.sid })
+      .then(data => {
+        cid = data.cid;
+
+        fetchResult(Commands.awaitServerInit, { sid: props.sid, cid })
+          .then((data) => {
+            return localConnection.setRemoteDescription(data.desc)
+          })
+          .then(() => localConnection.createAnswer())
+          .then(answer => {
+            localConnection.onicecandidate = (e) =>{
+              if (e.candidate) {
+                fetchResult(Commands.emitClientIceCandidate, { sid, cid, candidate: e.candidate })
+                  .catch((error) => { setWarning(`Unable to emit client ice candidate event: ${error.toString()}`); })
+              }
+            }
+
+            (async () => {
+              while (!done) {
+                try {
+                  const result = await fetchResult(Commands.awaitServerIceCandidate, { sid, cid })
+                  result.candidates.map((candidate: RTCIceCandidate) => localConnection.addIceCandidate(candidate))
+                } catch (error) {
+                  console.log("Unable to await client ice candidate event:", error);
+                }
+              }
+            })()
+    
+            return localConnection.setLocalDescription(answer)
+          })
+          .then(() => {
+            return fetchResult(Commands.emitClientAnswer, { sid, cid, desc: localConnection.localDescription })
+          })
+          .catch((error) => {
+            setWarning(`Unable to create an offer: ${error.toString()}`);
+          });
+      })
+      .catch((error) => { setWarning(`Unable to emit client init event: ${error.toString()}`); })
 
     return () => {
       localConnection.close();
     }
-  }, [props.sid, props.desc]);
+  }, [props.sid]);
 
   return (
     <div>
       <h1>Client Page</h1>
+      {warning && <div>some errors: {warning}</div>}
       {messages.map((message, index) => (
         <div key={index}>
           <div>{message.direction === "send" ? "我" : "对方"}</div>
@@ -222,28 +255,12 @@ const ClientPage = (props: ClientPageProps) => {
   );
 };
 
-type WarningPageProps = {
-  warning: string;
-}
-
-const WarningPage = (props: WarningPageProps) => {
-  return (
-    <div>
-      <h1>Warning Page</h1>
-      <div>some errors: {props.warning}</div>
-      <a href="/">回到首页</a>
-    </div>
-  )
-};
-
 export default function Index() {
   const data = useLoaderData<LoaderData>();
 
   return (
     <div className="font-sans p-4">
-      {data.warning ? <WarningPage warning={data.warning} /> 
-        : data.desc ? <ClientPage desc={data.desc} sid={data.sid!} /> 
-        : <ServerPage />}
+      {data.sid ? <ClientPage sid={data.sid!} />  : <ServerPage />}
     </div>
   );
 }

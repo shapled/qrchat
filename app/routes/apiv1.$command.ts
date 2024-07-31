@@ -1,36 +1,46 @@
 import { ActionFunction, json } from "@remix-run/node";
 import * as db from "~/store/db.server"
-import { Commands } from "../common/apiv1.server";
+import { Commands } from "../common/apiv1";
 
 export const action: ActionFunction = async ({ request, params }) => {
-  switch (params.command as Commands) {
-    case Commands.SetPeerServer:
-      return setPeerServer(request);
-    case Commands.SetPeerClient:
-      return setPeerClient(request);
-    case Commands.GetPeerClient:
-      return getPeerClient(request);
-    default:
-      return json({ "error": "nothing" });
+  const data = await request.json();
+  try {
+    switch (params.command as Commands) {
+      case Commands.emitServerInit:
+        return json({ sid: db.emitServerInit(data.desc) });
+      case Commands.emitClientInit:
+        return json({ cid: db.emitClientInit(data.sid) });
+      case Commands.emitClientAnswer:
+        db.emitClientAnswer(data.sid, data.cid, data.desc);
+        return json({});
+      case Commands.emitDone:
+        db.emitDone(data.sid, data.cid);
+        return json({});
+      case Commands.emitServerIceCandidate:
+        db.emitServerIceCandidate(data.sid, data.candidate);
+        return json({});
+      case Commands.emitClientIceCandidate:
+        db.emitClientIceCandidate(data.sid, data.cid, data.candidate);
+        return json({});
+      case Commands.awaitServerInit:
+        return json({ desc: await db.onServerInit(data.sid, data.cid) });
+      case Commands.awaitClientAnswer:
+        return json({ desc: await db.onClientAnswer(data.sid) });
+      case Commands.awaitServerIceCandidate:
+        return json({ candidates: await db.onServerIceCandidate(data.sid, data.cid) });
+      case Commands.awaitClientIceCandidate:
+        return json({ candidates: await db.onClientIceCandidate(data.sid) });
+      case Commands.awaitDone:
+        await db.onDone(data.sid);
+        return json({});
+      default:
+        break;
+    }
+  } catch (e) {
+    return json({ error: e });
   }
-};
-
-const setPeerServer = async (request: Request) => {
-  const data = await request.json();
-  return json({ sid: db.setPeerServer(data.desc) });
-};
-
-const setPeerClient = async (request: Request) => {
-  const data = await request.json();
-  db.setPeerClient(data.sid, data.desc);
-  console.log("set peer client: sid ", data.sid)
-  return json({});
-};
-
-const getPeerClient = async (request: Request) => {
-  const data = await request.json();
-  console.log("waiting to get peer client: sid ", data.sid);
-  const desc = await db.listenPeerClient(data.sid);
-  console.log("got peer client of sid: ", data.sid);
-  return json({ desc })
+  throw new Response(null, {
+    status: 404,
+    statusText: "Not Found",
+  });
 };
