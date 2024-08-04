@@ -1,15 +1,31 @@
 package main
 
 import (
+	"embed"
+	"flag"
+	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/lucsky/cuid"
 	"github.com/zishang520/engine.io/v2/types"
 	socketio "github.com/zishang520/socket.io/v2/socket"
 )
 
+//go:embed build
+var buildFs embed.FS
+
 func main() {
+	port := flag.Int("port", 8000, "The port number to listen on")
+	flag.Parse()
+
+	uiFs, err := fs.Sub(buildFs, "build")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	c := socketio.DefaultServerOptions()
 	c.SetCors(&types.Cors{
 		Origin:      "*",
@@ -20,6 +36,13 @@ func main() {
 	io.On("connection", func(ss ...any) {
 		socket := ss[0].(*socketio.Socket)
 		log.Printf("[%s] is connected", socket.Id())
+		go func() {
+			time.Sleep(60 * time.Second)
+			if !socket.Disconnected() {
+				log.Printf("[%s] is timeout", socket.Id())
+				socket.Disconnect(true)
+			}
+		}()
 
 		socket.On("server-init", func(args ...any) {
 			for _, room := range socket.Rooms().Keys() {
@@ -96,13 +119,18 @@ func main() {
 		})
 
 		socket.On("ice-candidate", func(args ...any) {
-			if len(args) < 1 {
+			if len(args) < 2 {
 				socket.Emit("custom-error", "ice-candidate invalid arguments")
 				return
 			}
 			candidate, ok := args[0].(string)
 			if !ok {
 				socket.Emit("custom-error", "ice-candidate invalid candidate")
+				return
+			}
+			ack, ok := args[len(args)-1].(func([]any, error))
+			if !ok {
+				socket.Emit("custom-error", "ice-candidate invalid ack")
 				return
 			}
 			rooms := socket.Rooms()
@@ -118,6 +146,7 @@ func main() {
 			}
 			io.Sockets().To(room).Emit("ice-candidate", candidate)
 			log.Printf("[%s] got ice candidate\n", socket.Id())
+			ack([]any{true}, nil)
 		})
 
 		socket.On("disconnect", func(args ...any) {
@@ -136,8 +165,8 @@ func main() {
 	})
 
 	http.Handle("/apiv1/stream/", io.ServeHandler(nil))
-	http.Handle("/", http.FileServer(http.Dir("../asset")))
+	http.Handle("/", http.FileServer(http.FS(uiFs)))
 
-	log.Println("Serving at localhost:8000...")
-	log.Fatal(http.ListenAndServe(":8000", nil))
+	log.Printf("Serving at localhost:%d...", *port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
