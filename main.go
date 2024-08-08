@@ -37,7 +37,7 @@ func main() {
 		socket := ss[0].(*socketio.Socket)
 		log.Printf("[%s] is connected", socket.Id())
 		go func() {
-			time.Sleep(60 * time.Second)
+			time.Sleep(80 * time.Second)
 			if !socket.Disconnected() {
 				log.Printf("[%s] is timeout", socket.Id())
 				socket.Disconnect(true)

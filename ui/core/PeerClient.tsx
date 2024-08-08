@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import { makeSocket, rtcPeerConfig } from "./webrtc";
 import { ChatContainer, MainContainer, Message, MessageInput, MessageList, MessageModel } from "@chatscope/chat-ui-kit-react";
 import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
-import { Flex } from "antd";
+import { Flex, Space } from "antd";
 
 type ClientPageProps = {
   sid: string;
 }
 
 export const PeerClient = (props: ClientPageProps) => {
+  const [connected, setConnected] = useState(false)
   const [warning, setWarning] = useState("")
   const [channel, setChannel] = useState<RTCDataChannel | undefined>();
   const [messages, setMessages] = useState<MessageModel[]>([])
@@ -27,6 +28,7 @@ export const PeerClient = (props: ClientPageProps) => {
     };
 
     sendChannel.onclose = (event) => {
+      setConnected(false);
       console.log('handleSendChannelStatusChange:', sendChannel.readyState, event)
     };
 
@@ -52,7 +54,8 @@ export const PeerClient = (props: ClientPageProps) => {
     socket.on("server-answer", (desc: string) => {
       localConnection.setRemoteDescription(JSON.parse(desc) as RTCSessionDescription)
         .then(() => {
-          setChannel(sendChannel)
+          setChannel(sendChannel);
+          setConnected(true);
         })
     })
 
@@ -76,7 +79,7 @@ export const PeerClient = (props: ClientPageProps) => {
       if (candidate) {
         (async () => {
           while (true) {
-            if (localConnection.localDescription) {
+            if (localConnection.localDescription && localConnection.remoteDescription) {
               console.log("add ice-candidate")
               localConnection.addIceCandidate(JSON.parse(candidate) as RTCIceCandidate)
               return;
@@ -101,27 +104,40 @@ export const PeerClient = (props: ClientPageProps) => {
 
   return (
     <Flex vertical justify="center" align="center">
-      <h1>QRChat</h1>
       {warning && <div>some errors: {warning}</div>}
       {channel && (
-        <div style={{ position: "relative", maxWidth: "100%", width: "600px", height: "500px" }}>
-          <MainContainer>
-            <ChatContainer>
-              <MessageList>
-                {messages.map((message, i) => (<Message key={i} model={message} />))}
-              </MessageList>
-              <MessageInput placeholder="Type message here" onSend={(_, text) => {
-                const message: MessageModel = {
-                  direction: "outgoing",
-                  position: "single",
-                  message: text,
-                }
-                appendMessage(message)
-                channel.send(JSON.stringify(message))
-              }} />
-            </ChatContainer>
-          </MainContainer>
-        </div>
+        <Space size="middle" direction="vertical">
+          <Flex justify="center" align="center">
+            <div
+              style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: connected ? 'green' : 'gray',
+                marginRight: '8px',
+              }}
+            />
+            <span>{connected ? 'Connected' : 'Disconnected'}</span>
+          </Flex>
+          <div style={{ position: "relative", maxWidth: "100%", width: "600px", height: "500px" }}>
+            <MainContainer>
+              <ChatContainer>
+                <MessageList>
+                  {messages.map((message, i) => (<Message key={i} model={message} />))}
+                </MessageList>
+                <MessageInput placeholder="Type message here" onSend={(_, text) => {
+                  const message: MessageModel = {
+                    direction: "outgoing",
+                    position: "single",
+                    message: text,
+                  }
+                  appendMessage(message)
+                  channel.send(JSON.stringify(message))
+                }} />
+              </ChatContainer>
+            </MainContainer>
+          </div>
+        </Space>
       )}
     </Flex>
   );
