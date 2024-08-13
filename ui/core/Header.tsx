@@ -5,7 +5,7 @@ import { GithubOutlined } from "@ant-design/icons"
 export const Header = () => {
   return (
     <div style={{ height: "64px" }}>
-      <Flex justify="space-between" align="center" style={{ padding: "0 32px", height: "100%" }}>
+      <Flex justify="space-between" align="center" style={{ padding: "0 8px", height: "100%" }}>
         <Tooltip title="qrchat.top">
           <a href="/"><Logo /></a>
         </Tooltip>

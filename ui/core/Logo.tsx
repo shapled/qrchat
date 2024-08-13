@@ -1,6 +1,7 @@
+import { Space } from 'antd';
 import styled from 'styled-components';
 
-const Container = styled.div`
+const Container = styled(Space)`
   display: flex;
   justify-content: center;
   align-items: center;
@@ -8,23 +9,21 @@ const Container = styled.div`
   user-select: none;
 `;
 
-const LeftSection = styled.div`
-  /* width: 50%; */
+const TextSection = styled.div`
   height: 36px;
-  background-color: #f4f4f4;
+  /* background-color: #f4f4f4; */
   display: flex;
   justify-content: center;
   align-items: center;
   font-size: 24px;
   font-weight: bold;
   color: #333;
-  border-radius: 10px;
-  margin-right: 4px;
+  /* border-radius: 10px; */
   padding: 8px 16px;
-  border: 1px solid #ccc;
+  /* border: 1px solid #ccc; */
 `;
 
-const RightSection = styled.div`
+const BlocksSection = styled.div`
   /* width: 50%; */
   height: 36px;
   width: 36px;
@@ -58,23 +57,16 @@ const Block4 = styled(GridItem)`
   background-color: #cccccc;
 `;
 
-const ConnectorCircle = styled.div`
-  width: 20px;
-  height: 20px;
-  background-color: #333;
-  border-radius: 50%;
-`;
-
 export const Logo = () => {
   return (
     <Container>
-      <LeftSection>QRChat</LeftSection>
-      <RightSection>
+      <BlocksSection>
         <Block2></Block2>
         <Block3></Block3>
         <Block1></Block1>
         <Block4></Block4>
-      </RightSection>
+      </BlocksSection>
+      <TextSection>QRChat</TextSection>
     </Container>
   );
 };
