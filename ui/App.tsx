@@ -1,4 +1,4 @@
-import { Flex } from "antd";
+import { Flex, App as AntdApp } from "antd";
 import { Header } from "./core/Header";
 import { PeerClient } from "./core/PeerClient";
 import { PeerServer } from "./core/PeerServer";
@@ -20,11 +20,13 @@ export default function App() {
   const sid = new URLSearchParams(window.location.search).get("sid");
 
   return (
-    <Container vertical>
-      <Header />
-      <Content vertical justify="center" align="center">
-        {sid ? <PeerClient sid={sid!} />  : <PeerServer />}
-      </Content>
-    </Container>
+    <AntdApp>
+      <Container vertical>
+        <Header />
+        <Content vertical justify="center" align="center">
+          {sid ? <PeerClient sid={sid!} />  : <PeerServer />}
+        </Content>
+      </Container>
+    </AntdApp>
   );
 }

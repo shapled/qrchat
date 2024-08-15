@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { makeSocket, rtcPeerConfig } from "./webrtc";
+import { useCallback, useEffect } from "react";
+import { dataChannelConfig, makeSocket, rtcPeerConfig } from "./webrtc";
 import { Packet, useStore } from "./store";
 import { useShallow } from 'zustand/react/shallow'
+import { App } from "antd";
 
 const log = (...messages: any) => console.log(...messages);
 
@@ -10,15 +11,16 @@ export type ServerConnection = {
   close: () => void,
 }
 
-export const useServerConnection = (): ServerConnection => {
-  const [setRoomID, setStatus, recv, addError] = useStore(
-    useShallow((state) => [state.setRoomID, state.setStatus, state.recv, state.addError]));
-  const [closed, setClosed] = useState(false);
-  const [channel, setChannel] = useState<RTCDataChannel | undefined>();
+export const useServerConnection = () => {
+  const { notification } = App.useApp();
+  const [setRoomID, setStatus, recv] = useStore(
+    useShallow((state) => [state.setRoomID, state.setStatus, state.recv]));
+
+  const addError = useCallback((error: string) => {
+    notification.error({ message: "Error", description: error });
+  }, [notification])
 
   useEffect(() => {
-    if (closed) { return; }
-
     const socket = makeSocket();
     const localConnection = new RTCPeerConnection(rtcPeerConfig);
 
@@ -32,7 +34,7 @@ export const useServerConnection = (): ServerConnection => {
       const sendChannel = event.channel;
 
       sendChannel.onopen = (event) => {
-        setStatus("connected");
+        setStatus("connected", (packet: Packet) => { sendChannel.send(JSON.stringify(packet)) });
         log("channel opened");
       };
       
@@ -42,7 +44,6 @@ export const useServerConnection = (): ServerConnection => {
       };
   
       sendChannel.onmessage = (event) => recv(JSON.parse(event.data as string) as Packet)
-      setChannel(sendChannel);
     }
 
     localConnection.onicecandidate = (e) =>{
@@ -103,21 +104,7 @@ export const useServerConnection = (): ServerConnection => {
       }
       localConnection.close();
     }
-  }, [addError, closed, setStatus, recv, setRoomID])
-
-  return {
-    send: (packet: Packet) => {
-      if (!channel) {
-        addError("channel is not ready")
-        return;
-      }
-      channel.send(JSON.stringify(packet))
-    },
-    close: () => {
-      setClosed(true);
-      channel?.close();
-    },
-  }
+  }, [addError, setStatus, recv, setRoomID])
 }
 
 export type ClientConnection = {
@@ -125,18 +112,19 @@ export type ClientConnection = {
   close: () => void,
 }
 
-export const useClientConnection = (roomID: string): ClientConnection => {
-  const [setStatus, recv, addError] = useStore(useShallow((state) => [state.setStatus, state.recv, state.addError]));
-  const [channel, setChannel] = useState<RTCDataChannel | undefined>();
-  const [closed, setClosed] = useState(false);
+export const useClientConnection = (roomID: string) => {
+  const { notification } = App.useApp();
+  const [setStatus, recv] = useStore(useShallow((state) => [state.setStatus, state.recv]));
+
+  const addError = useCallback((error: string) => {
+    notification.error({ message: "Error", description: error });
+  }, [notification])
 
   useEffect(() => {
-    if (!roomID  || closed) { return; }
-
     const socket = makeSocket();
     const localConnection = new RTCPeerConnection(rtcPeerConfig);
 
-    const sendChannel = localConnection.createDataChannel("sendChannel");
+    const sendChannel = localConnection.createDataChannel("sendChannel", dataChannelConfig);
 
     sendChannel.onmessage = (event) => {
       recv(JSON.parse(event.data as string) as Packet)
@@ -152,7 +140,7 @@ export const useClientConnection = (roomID: string): ClientConnection => {
       log("server answered");
       
       sendChannel.onopen = (event) => {
-        setStatus("connected")
+        setStatus("connected", (packet: Packet) => { sendChannel.send(JSON.stringify(packet)) })
         log("channel opened");
       };
   
@@ -162,7 +150,6 @@ export const useClientConnection = (roomID: string): ClientConnection => {
       };
 
       localConnection.setRemoteDescription(JSON.parse(desc) as RTCSessionDescription)
-        .then(() => { setChannel(sendChannel); })
     })
 
     localConnection.onicecandidate = (e) =>{
@@ -208,19 +195,5 @@ export const useClientConnection = (roomID: string): ClientConnection => {
       }
       localConnection.close();
     }
-  }, [closed, setStatus, recv, addError, roomID]);
-
-  return {
-    send: (packet: Packet) => {
-      if (!channel) {
-        addError("channel is not ready")
-        return;
-      }
-      channel.send(JSON.stringify(packet))
-    },
-    close: () => {
-      setClosed(true);
-      channel?.close();
-    },
-  }
+  }, [setStatus, recv, roomID, addError]);
 }

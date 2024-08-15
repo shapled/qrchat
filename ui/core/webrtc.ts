@@ -7,5 +7,10 @@ export const rtcPeerConfig = {
   ]
 };
 
+export const dataChannelConfig = {
+  ordered: true,
+  maxRetransmits: -1,
+};
+
 const site = process.env.NODE_ENV === 'production' ? "/" : "http://127.0.0.1:8000";
 export const makeSocket = () => io(site, { path: "/apiv1/stream" });
