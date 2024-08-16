@@ -1,21 +1,28 @@
 import { Button, Flex, Input, QRCode, Space, Tooltip, Typography } from "antd";
 import { useEffect, useState } from "react";
-import { useStore } from "./store";
 import { CheckOutlined, CopyOutlined, LinkOutlined } from "@ant-design/icons";
 import Countdown from "antd/es/statistic/Countdown";
-import { useShallow } from "zustand/react/shallow";
+import { ConnectionStatus } from "./connection";
 
-export const QRCodeBox = () => {
-  const [roomID, storeStatus] = useStore(useShallow(state => [state.roomID, state.status]));
+export type QRCodeBoxProps = {
+  status: ConnectionStatus;
+  sid: string;
+}
+
+export const QRCodeBox = (props: QRCodeBoxProps) => {
   const [copied, setCopied] = useState(false);
   const [deadline, setDeadline] = useState<number | undefined>();
   const [status, setStatus] = useState<"expired" | "active" | "loading" | "scanned" | undefined>("loading")
 
   const currentURL = new URL(window.location.href);
-  const clientUrl = `${currentURL.origin}${currentURL.pathname}?sid=${roomID}`;
+  const clientUrl = `${currentURL.origin}${currentURL.pathname}?sid=${props.sid}`;
 
   useEffect(() => {
-    switch (storeStatus) {
+    if (!props.sid) {
+      setStatus("loading");
+      return;
+    }
+    switch (props.status) {
       case "waiting":
         setStatus("loading");
         break;
@@ -30,7 +37,7 @@ export const QRCodeBox = () => {
         setStatus("expired");
         break;
     }
-  }, [storeStatus])
+  }, [props.sid, props.status])
 
   return (
     <Space direction="vertical" align="center">

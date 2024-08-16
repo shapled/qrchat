@@ -1,49 +1,103 @@
-import { useCallback, useEffect } from "react";
-import { dataChannelConfig, makeSocket, rtcPeerConfig } from "./webrtc";
-import { Packet, useStore } from "./store";
-import { useShallow } from 'zustand/react/shallow'
-import { App } from "antd";
+import { io, Socket } from "socket.io-client";
+import streamSaver from "streamsaver";
 
 const log = (...messages: any) => console.log(...messages);
 
-export type ServerConnection = {
-  send: (packet: Packet) => void,
-  close: () => void,
+export type ConnectionStatus = "waiting" | "shaking" | "connected" | "closed";
+
+type ErrorFunc = (error: string) => void;
+type RecvFunc = (data: string) => void;
+type RoomIDReadyFunc = (roomID: string) => void;
+type StatusChangedFunc = (status: ConnectionStatus) => void;
+type FileRecvFunc = (fileID: string) => { onRecvData: (chunk: Uint8Array) => void, onClose: () => void };
+
+export type ConnectionOptions = {
+  onError?: ErrorFunc,
+  onRecv?: RecvFunc,
+  onRoomIDReady?: RoomIDReadyFunc,
+  onStatusChanged?: StatusChangedFunc,
+  onFileRecv?: FileRecvFunc,
 }
 
-export const useServerConnection = () => {
-  const { notification } = App.useApp();
-  const [setRoomID, setStatus, recv] = useStore(
-    useShallow((state) => [state.setRoomID, state.setStatus, state.recv]));
+export class Connection {
+  onError?: ErrorFunc;
+  onRecv?: RecvFunc;
+  onRoomIDReady?: RoomIDReadyFunc;
+  onStatusChanged?: StatusChangedFunc;
+  onFileRecv?: FileRecvFunc;
+  status: ConnectionStatus;
+  mainChannel?: RTCDataChannel;
+  fileChannels: { [key: string]: RTCDataChannel } = {};
+  readonly socket: Socket = Connection.makeSocket();
+  readonly pc: RTCPeerConnection = new RTCPeerConnection(Connection.rtcPeerConfig);
 
-  const addError = useCallback((error: string) => {
-    notification.error({ message: "Error", description: error });
-  }, [notification])
+  static readonly mainChannelName = "main";
+  static readonly rtcPeerConfig = {
+    iceServers: [
+      // { urls: "stun.l.google.com:19302" },
+      { urls: "stun:stun.miwifi.com" },
+    ]
+  };
+  static readonly site = process.env.NODE_ENV === 'production' ? "/" : "http://127.0.0.1:8000";
 
-  useEffect(() => {
-    const socket = makeSocket();
-    const localConnection = new RTCPeerConnection(rtcPeerConfig);
+  static  makeSocket() { 
+    return io(Connection.site, { path: "/apiv1/stream" })
+  }
+
+  static makeFileChannelConfig = (id: number) => ({
+    id,
+    ordered: true,
+    negotiated: true,
+    maxRetransmits: -1,
+  });
+
+  constructor(opt: ConnectionOptions) {
+    this.onError = opt.onError;
+    this.onRecv = opt.onRecv;
+    this.onRoomIDReady = opt.onRoomIDReady;
+    this.onStatusChanged = opt.onStatusChanged;
+    this.onFileRecv = opt.onFileRecv;
+    this.status = "waiting";
+  }
+
+  initServerSocket() {
+    const socket = this.socket;
+    const localConnection = this.pc;
 
     socket.io.on("open", () => { log("socket connected") })
     socket.io.on("close", () => { log("socket disconnected") })
-    socket.io.on("error", (error) => { addError(error.message) })
+    socket.io.on("error", (error) => { this.onError?.(error.message) })
     
-    socket.on("custom-error", (message: string) => { addError(message) })
+    socket.on("custom-error", (message: string) => { this.onError?.(message) })
 
     localConnection.ondatachannel = (event) => {
-      const sendChannel = event.channel;
+      const channel = event.channel;
 
-      sendChannel.onopen = (event) => {
-        setStatus("connected", (packet: Packet) => { sendChannel.send(JSON.stringify(packet)) });
-        log("channel opened");
-      };
-      
-      sendChannel.onclose = (event) => {
-        setStatus("closed");
-        log('channel closed');
-      };
-  
-      sendChannel.onmessage = (event) => recv(JSON.parse(event.data as string) as Packet)
+      if (channel.label === "main") {
+        this.mainChannel = channel;
+
+        channel.onopen = () => {
+          this.setStatus("connected");
+          log("channel opened");
+        };
+        
+        channel.onclose = () => {
+          this.setStatus("closed");
+          log('channel closed');
+        };
+    
+        channel.onmessage = (event) => this.onRecv?.(event.data);
+        return;
+      }
+
+      if (channel.label.startsWith("file-")) {
+        const fileID = channel.label.slice("file-".length);
+        this.initFileChannel(fileID, channel);
+        return;
+      }
+
+      this.onError?.(`unknown channel ${channel.label}`);
+      return;
     }
 
     localConnection.onicecandidate = (e) =>{
@@ -88,65 +142,47 @@ export const useServerConnection = () => {
           log("sent server answer")
           socket.emit("server-answer", JSON.stringify(localConnection.localDescription))
         })
-        .catch(addError)
+        .catch(this.onError)
     })
 
     socket.emitWithAck("server-init")
       .then((roomID: string) => {
         log("ack info: ", roomID);
-        setRoomID(roomID);
-        setStatus("shaking");
+        this.setStatus("shaking");
+        this.onRoomIDReady?.(roomID);
       })
-    
-    return () => {
-      if (socket.connected) {
-        socket.close();
-      }
-      localConnection.close();
-    }
-  }, [addError, setStatus, recv, setRoomID])
-}
+      .catch(this.onError)
+  }
 
-export type ClientConnection = {
-  send: (packet: Packet) => void,
-  close: () => void,
-}
+  initClientSocket(roomID: string) {
+    const socket = this.socket;
+    const localConnection = this.pc;
 
-export const useClientConnection = (roomID: string) => {
-  const { notification } = App.useApp();
-  const [setStatus, recv] = useStore(useShallow((state) => [state.setStatus, state.recv]));
+    this.setStatus("shaking");
 
-  const addError = useCallback((error: string) => {
-    notification.error({ message: "Error", description: error });
-  }, [notification])
+    const channel = this.mainChannel = localConnection.createDataChannel(Connection.mainChannelName);
 
-  useEffect(() => {
-    const socket = makeSocket();
-    const localConnection = new RTCPeerConnection(rtcPeerConfig);
-
-    const sendChannel = localConnection.createDataChannel("sendChannel", dataChannelConfig);
-
-    sendChannel.onmessage = (event) => {
-      recv(JSON.parse(event.data as string) as Packet)
+    channel.onmessage = (event) => {
+      this.onRecv?.(event.data)
     }
 
     socket.io.on("open", () => { log("socket connected") })
     socket.io.on("close", () => { log("socket disconnected") })
-    socket.io.on("error", (error) => { addError(error.message) })
+    socket.io.on("error", (error) => { this.onError?.(error.message) })
 
-    socket.on("custom-error", (message: string) => { addError(message) })
+    socket.on("custom-error", (message: string) => { this.onError?.(message) })
 
     socket.on("server-answer", (desc: string) => {
       log("server answered");
       
-      sendChannel.onopen = (event) => {
-        setStatus("connected", (packet: Packet) => { sendChannel.send(JSON.stringify(packet)) })
-        log("channel opened");
+      channel.onopen = () => {
+        this.setStatus("connected");
+        log("channel main opened");
       };
   
-      sendChannel.onclose = (event) => {
-        setStatus("closed");
-        log("channel closed");
+      channel.onclose = (event) => {
+        this.setStatus("closed");
+        log("channel main closed");
       };
 
       localConnection.setRemoteDescription(JSON.parse(desc) as RTCSessionDescription)
@@ -168,6 +204,19 @@ export const useClientConnection = (roomID: string) => {
       }
     }
 
+    localConnection.ondatachannel = (event) => {
+      const channel = event.channel;
+
+      if (channel.label.startsWith("file-")) {
+        const fileID = channel.label.slice("file-".length);
+        this.initFileChannel(fileID, channel);
+        return;
+      }
+
+      this.onError?.(`unknown channel ${channel.label}`);
+      return;
+    }
+
     socket.on("ice-candidate", (candidate) => {
       if (candidate) {
         (async () => {
@@ -187,13 +236,87 @@ export const useClientConnection = (roomID: string) => {
       .createOffer()
       .then((offer) => localConnection.setLocalDescription(offer))
       .then(() => socket.emit("client-init", roomID, JSON.stringify(localConnection.localDescription)))
-      .catch(addError)
+      .catch(this.onError)
+  }
 
-    return () => {
-      if (socket.connected) {
-        socket.close();
-      }
-      localConnection.close();
+  private setStatus(status: ConnectionStatus) {
+    this.status = status;
+    this.onStatusChanged?.(status);
+  }
+
+  close() {
+    if (this.socket.connected) {
+      this.socket.close();
     }
-  }, [setStatus, recv, roomID, addError]);
+    this.pc.close();
+  }
+
+  send(data: string) {
+    this.mainChannel?.send(data);
+  }
+
+  async sendFile(fileID: string, fileNo: number, file: File) {
+    try {
+      const channel = this.pc.createDataChannel(`file-${fileID}`, Connection.makeFileChannelConfig(fileNo));
+      const reader = file.stream().getReader();
+      if (!channel) {
+        this.onError?.(`file ${fileID} channel not found`);
+        return;
+      }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        channel.send(value);
+      }
+      channel.close();
+      delete this.fileChannels[fileID];
+    } catch(err) {
+      console.log("err: ", err)
+    }
+  }
+
+  async recvFile(fileID: string, fileNo: number, filename: string) {
+    if (!window.WritableStream) {
+      streamSaver.WritableStream = WritableStream as any;
+      window.WritableStream = WritableStream as any;
+    }
+    
+    try {
+      const channel = this.pc.createDataChannel(`file-${fileID}`, Connection.makeFileChannelConfig(fileNo));
+      const fileStream = streamSaver.createWriteStream(filename);
+      const writer = fileStream.getWriter();
+      let chain = Promise.resolve();
+  
+      channel.onmessage = (event) => {
+        chain = chain.then(() => writer.write(event.data));
+      }
+    } catch(err) {
+      console.log("err: ", err)
+    }
+  }
+
+  initFileChannel(fileID: string, channel: RTCDataChannel) {
+    const result = this.onFileRecv?.(fileID);
+
+    if (result) {
+      const { onRecvData, onClose } = result;
+      this.fileChannels[fileID] = channel;
+
+      channel.onopen = () => {
+        log(`file ${fileID} channel opened`);
+      }
+
+      channel.onclose = () => {
+        log(`file ${fileID} channel closed`);
+        onClose();
+      } 
+
+      channel.onmessage = (event) => onRecvData(event.data as Uint8Array);
+      return;
+    }
+
+    this.onError?.(`file ${fileID} channel not found`);
+  }
 }

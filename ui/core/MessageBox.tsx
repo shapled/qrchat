@@ -6,14 +6,14 @@ import {
   MessageList as UIMessageList,
 } from "@chatscope/chat-ui-kit-react"
 import { Button, Flex, Modal, Progress, Spin } from "antd"
-import { makeFilePacket, makeFileRequiredPacket, makeTextPacket, Message, Packet, useStore } from "./store";
-import { useShallow } from "zustand/react/shallow";
-import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
 import { useRef } from "react";
-import { CheckOutlined, DownloadOutlined, ExclamationCircleFilled, LoadingOutlined, QuestionOutlined } from "@ant-design/icons";
-import { makeWriter } from "./stream";
+import { CheckOutlined, DownloadOutlined, ExclamationCircleFilled, QuestionOutlined } from "@ant-design/icons";
+import { makeFileMetaMessage, makeTextMessage, MessageFile, MessageText, useMessages } from "./message";
+import { ConnectionStatus } from "./connection";
+import { makeFilePacket, makeFileRequiredPacket, makeTextPacket, Packet } from "./packet";
+import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
 
-const MessageTextItem = ({ message }: { message: Message }) => {
+const MessageTextItem = ({ message }: { message: MessageText }) => {
   return (
     <UIMessage model={{
       message: message.text,
@@ -26,12 +26,12 @@ const MessageTextItem = ({ message }: { message: Message }) => {
 }
 
 type MessageFileItemProps = {
-  message: Message,
-  onDownload: () => void,
+  message: MessageFile,
+  onDownload: (filename: string) => void,
 }
 
 const MessageFileItem = ({ message, onDownload }: MessageFileItemProps) => {
-  const downloadFile = useStore(useShallow(state => state.downloadFile));
+  const fileObj = useMessages(state => state.fileObjs[message.fileID]);
 
   return (
     <UIMessage model={{
@@ -46,21 +46,22 @@ const MessageFileItem = ({ message, onDownload }: MessageFileItemProps) => {
             <QuestionOutlined />
           </Flex>
           <Flex vertical justify="space-between" style={{ height: "48px", marginLeft: "8px" }}>
-            <div>{message.fileObj?.filename}</div>
-            <div>{message.fileObj?.size}B</div>
+            <div>{fileObj?.filename}</div>
+            <div>{fileObj?.size}B</div>
           </Flex>
           <div style={{ flexGrow: 1 }} />
           <Flex justify="center" align="center">
-            {message.fileObj?.status === "pending" 
-              ? <Button shape="circle" onClick={() => {
-                downloadFile(message.fileID!, makeWriter(message.fileObj!.filename, message.fileObj!.size));
-                onDownload();
-              }} icon={<DownloadOutlined />} />
-              : message.fileObj?.status === "downloading" 
-                ? <Progress type="circle" percent={message.fileObj?.received * 100 / message.fileObj?.size} />
-                : message.fileObj?.status === "done"
-                  ? <Button disabled shape="circle" icon={<CheckOutlined />} />
-                  : <></>}
+            <div style={{ height: "32px", width: "32px" }}>
+              {fileObj?.status === "pending" ? (
+                <Button shape="circle" onClick={() => {
+                  onDownload(fileObj?.filename);
+                }} icon={<DownloadOutlined />} />
+              ) : fileObj?.status === "downloading" ? (
+                <Progress size={32} type="circle" percent={fileObj?.received * 100 / fileObj?.size} />
+              ) : fileObj?.status === "received" ? (
+                <Button disabled shape="circle" icon={<CheckOutlined />} />
+              ) : <></>}
+            </div>
           </Flex>
         </Flex>
       </UIMessage.CustomContent>
@@ -68,15 +69,18 @@ const MessageFileItem = ({ message, onDownload }: MessageFileItemProps) => {
   )
 }
 
-export const MessageBox = () => {
+type MessageBoxProps = {
+  status: ConnectionStatus;
+  send: (packet: Packet) => void;
+  recvFile: (fileID: string, fileNo: number, filename: string) => void;
+}
+
+export const MessageBox = (props: MessageBoxProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [send, status, messages] = useStore(
-    useShallow((state) => [state.send, state.status, state.messages]));
+  const store = useMessages();
 
-  const connected = status === "connected";
-  const connecting = status !== "connected" && status !== "closed";
-
-  console.log("status: ", status)
+  const connected = props.status === "connected";
+  const connecting = props.status !== "connected" && props.status !== "closed";
 
   const showConfirm = (file: File, ok: () => void) => {
     Modal.confirm({
@@ -108,18 +112,24 @@ export const MessageBox = () => {
             <MainContainer>
               <ChatContainer>
                 <UIMessageList>
-                  {messages.map((message, i) =>  {
+                  {store.messages.map((message, i) =>  {
                     switch (message.type) {
                       case "text":
-                        return <MessageTextItem key={i} message={message} />
+                        return (
+                          <UIMessageList.Content key={i}>
+                            <MessageTextItem message={message as MessageText} />
+                          </UIMessageList.Content>
+                        )
                       case "file":
                         return (
-                          <UIMessageList.Content>
+                          <UIMessageList.Content key={i}>
                             <MessageFileItem 
-                              key={i}
-                              message={message} 
-                              onDownload={() => {
-                                send(makeFileRequiredPacket(message.fileID!));
+                              message={message as MessageFile} 
+                              onDownload={(filename: string) => {
+                                const msg = message as MessageFile;
+                                store.setFileStatus(msg.fileID, "downloading");
+                                props.recvFile(msg.fileID, msg.fileNo, filename);
+                                props.send(makeFileRequiredPacket(msg.fileID, msg.fileNo));
                               }}
                             />
                           </UIMessageList.Content>
@@ -137,7 +147,10 @@ export const MessageBox = () => {
                   sendDisabled={!connected}
                   placeholder="Type message here" 
                   onSend={(_, text) => {
-                    send(makeTextPacket(text));
+                    const pkt = makeTextPacket(text);
+                    const msg = makeTextMessage("outgoing", pkt);
+                    store.appendMessage(msg);
+                    props.send(pkt);
                   }}
                 />
               </ChatContainer>
@@ -160,7 +173,10 @@ export const MessageBox = () => {
               const file = files[0];
               showConfirm(file, () => {
                 console.log("send file: ", file);
-                send(makeFilePacket(file), file);
+                const pkt = makeFilePacket(file);
+                const [msg, fileObj] = makeFileMetaMessage("outgoing", pkt);
+                store.appendMessage(msg, { file, fileObj });
+                props.send(pkt);
               })
             }
           }}
