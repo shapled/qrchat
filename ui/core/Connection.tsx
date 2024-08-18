@@ -1,7 +1,11 @@
 import { io, Socket } from "socket.io-client";
-import streamSaver from "streamsaver";
+import { makeIceCandidate } from "./packet";
+import { Semaphore } from "./semaphore";
 
-const log = (...messages: any) => console.log(...messages);
+const chunkSize = 16384;
+const log = (...messages: any) => {
+  process.env.NODE_ENV === 'production' || console.log(...messages);
+}
 
 export type ConnectionStatus = "waiting" | "shaking" | "connected" | "closed";
 
@@ -9,7 +13,7 @@ type ErrorFunc = (error: string) => void;
 type RecvFunc = (data: string) => void;
 type RoomIDReadyFunc = (roomID: string) => void;
 type StatusChangedFunc = (status: ConnectionStatus) => void;
-type FileRecvFunc = (fileID: string) => { onRecvData: (chunk: Uint8Array) => void, onClose: () => void };
+type FileRecvFunc = (fileID: string) => { onRecvData: (chunk: ArrayBuffer) => void, onClose: () => void };
 
 export type ConnectionOptions = {
   onError?: ErrorFunc,
@@ -27,7 +31,6 @@ export class Connection {
   onFileRecv?: FileRecvFunc;
   status: ConnectionStatus;
   mainChannel?: RTCDataChannel;
-  fileChannels: { [key: string]: RTCDataChannel } = {};
   readonly socket: Socket = Connection.makeSocket();
   readonly pc: RTCPeerConnection = new RTCPeerConnection(Connection.rtcPeerConfig);
 
@@ -44,10 +47,8 @@ export class Connection {
     return io(Connection.site, { path: "/apiv1/stream" })
   }
 
-  static makeFileChannelConfig = (id: number) => ({
-    id,
+  static makeFileChannelConfig = () => ({
     ordered: true,
-    negotiated: true,
     maxRetransmits: -1,
   });
 
@@ -102,12 +103,18 @@ export class Connection {
 
     localConnection.onicecandidate = (e) =>{
       if (e.candidate) {
-        log("emit ice-candidate")
-        const data = JSON.stringify(e.candidate);
+        const candidate = e.candidate;
         (async () => {
           while (true) {
-            if (await socket.emitWithAck("ice-candidate", data)) {
+            if (this.connected()) {
+              log("emit ice-candidate via main data channel");
+              this.mainChannel?.send(JSON.stringify(makeIceCandidate(candidate)))
               return;
+            } else {
+              if (await socket.emitWithAck("ice-candidate", JSON.stringify(candidate))) {
+                log("emit ice-candidate via socket");
+                return;
+              }
             }
             log("emit ice-candidate failed, retry in 100ms");
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -190,14 +197,20 @@ export class Connection {
 
     localConnection.onicecandidate = (e) =>{
       if (e.candidate) {
-        log("emit ice-candidate")
-        const data = JSON.stringify(e.candidate);
+        const candidate = e.candidate;
         (async () => {
           while (true) {
-            if (await socket.emitWithAck("ice-candidate", data)) {
+            if (this.connected()) {
+              log("emit ice-candidate via main data channel");
+              this.mainChannel?.send(JSON.stringify(makeIceCandidate(candidate)))
               return;
+            } else {
+              if (await socket.emitWithAck("ice-candidate", JSON.stringify(candidate))) {
+                log("emit ice-candidate via socket");
+                return;
+              }
             }
-            console.log("emit ice-candidate failed, retry in 100ms");
+            log("emit ice-candidate failed, retry in 100ms");
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         })()
@@ -251,13 +264,27 @@ export class Connection {
     this.pc.close();
   }
 
+  connected() {
+    return this.status === "connected";
+  }
+
   send(data: string) {
     this.mainChannel?.send(data);
   }
 
-  async sendFile(fileID: string, fileNo: number, file: File) {
-    try {
-      const channel = this.pc.createDataChannel(`file-${fileID}`, Connection.makeFileChannelConfig(fileNo));
+  async sendFile(fileID: string, file: File) {
+    const channel = this.pc.createDataChannel(`file-${fileID}`, Connection.makeFileChannelConfig());
+    let sem = new Semaphore();
+
+    channel.binaryType = 'arraybuffer';
+    channel.onclose = (event) => {
+      log(`file ${fileID} channel closed`);
+    }
+    channel.onmessage = (event) => {
+      sem.release();
+    }
+    channel.onopen = async () => {
+      log(`file ${fileID} channel opened, state: ${channel.readyState}`);
       const reader = file.stream().getReader();
       if (!channel) {
         this.onError?.(`file ${fileID} channel not found`);
@@ -268,41 +295,25 @@ export class Connection {
         if (done) {
           break;
         }
-        channel.send(value);
+        for (let i = 0; i < value.length; i += chunkSize) {
+          const chunk = value.slice(i, i + chunkSize);
+          log(`length: ${value.length}, type ${typeof value}`);
+          const arrayBuffer = chunk.buffer.slice(chunk.byteOffset, chunk.byteLength + chunk.byteOffset);
+          await sem.acquire();
+          channel.send(arrayBuffer);
+        }
       }
       channel.close();
-      delete this.fileChannels[fileID];
-    } catch(err) {
-      console.log("err: ", err)
-    }
-  }
-
-  async recvFile(fileID: string, fileNo: number, filename: string) {
-    if (!window.WritableStream) {
-      streamSaver.WritableStream = WritableStream as any;
-      window.WritableStream = WritableStream as any;
-    }
-    
-    try {
-      const channel = this.pc.createDataChannel(`file-${fileID}`, Connection.makeFileChannelConfig(fileNo));
-      const fileStream = streamSaver.createWriteStream(filename);
-      const writer = fileStream.getWriter();
-      let chain = Promise.resolve();
-  
-      channel.onmessage = (event) => {
-        chain = chain.then(() => writer.write(event.data));
-      }
-    } catch(err) {
-      console.log("err: ", err)
     }
   }
 
   initFileChannel(fileID: string, channel: RTCDataChannel) {
+    channel.binaryType = 'arraybuffer';
     const result = this.onFileRecv?.(fileID);
 
     if (result) {
       const { onRecvData, onClose } = result;
-      this.fileChannels[fileID] = channel;
+      const answer = new ArrayBuffer(1);
 
       channel.onopen = () => {
         log(`file ${fileID} channel opened`);
@@ -311,9 +322,14 @@ export class Connection {
       channel.onclose = () => {
         log(`file ${fileID} channel closed`);
         onClose();
-      } 
+      }
 
-      channel.onmessage = (event) => onRecvData(event.data as Uint8Array);
+      channel.onmessage = (event) => {
+        const data = event.data as ArrayBuffer;
+        log(`got data length: ${data.byteLength}`)
+        onRecvData(data);
+        channel.send(answer);
+      };
       return;
     }
 

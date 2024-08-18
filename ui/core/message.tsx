@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { Packet, PacketFileMeta, PacketFileRequired, PacketText } from "./packet";
-import { Connection } from "./connection";
+import { Connection } from "./Connection";
 import streamSaver from "streamsaver";
 
 export type MessageType = "text" | "file";
@@ -19,7 +19,6 @@ export type MessageText = MessageBase & {
 
 export type MessageFile = MessageBase & {
   fileID: string,
-  fileNo: number,
 }
 
 export type Message = MessageText | MessageFile;
@@ -28,7 +27,6 @@ export type FileObjStatus = "none" | "pending" | "downloading" | "received";
 
 export type FileObj = {
   fileID: string,
-  fileNo: number,
   filename: string,
   received: number,
   size: number,
@@ -50,10 +48,8 @@ export const makeFileMetaMessage = (direction: MessageDirection, packet: PacketF
     sendTime: packet.sendTime,
     type: "file",
     fileID: packet.fileID,
-    fileNo: packet.fileNo,
   }, {
     fileID: packet.fileID,
-    fileNo: packet.fileNo,
     filename: packet.filename,
     received: 0,
     size: packet.size,
@@ -122,7 +118,7 @@ export const useMessages = create<MessagesState>((set, get) => ({
   incReceivedFileSize: (fileID: string, size: number) => {
     set(state => {
       const receivedFileObjs = state.fileObjs;
-      receivedFileObjs[fileID].size += size;
+      receivedFileObjs[fileID].received += size;
       return { ...state, receivedFileObjs };
     });
   },
@@ -152,7 +148,7 @@ export const onPacketRecv = (conn: Connection, packet: Packet) => {
       const pkt = packet as PacketFileRequired;
       const file = useMessages.getState().sentFiles[pkt.fileID];
       if (file) {
-        conn.sendFile(pkt.fileID, pkt.fileNo, file).then(() => {
+        conn.sendFile(pkt.fileID, file).then(() => {
           useMessages.getState().removeSentFile(pkt.fileID);
         });
       }
@@ -175,14 +171,16 @@ export const onFileRecv = (fileID: string) => {
   const writer = fileStream.getWriter();
 
   return {
-    onRecvData: (chunk: Uint8Array) => {
-      writer.write(chunk);
+    onRecvData: (chunk: ArrayBuffer) => {
+      const arr = new Uint8Array(chunk);
+      writer.write(arr);
       useMessages.getState().incReceivedFileSize(fileID, chunk.byteLength);
     },
     onClose: () => {
-      writer.close();
-      fileStream.close();
-      useMessages.getState().setFileStatus(fileID, "received");
+      writer.close().then(() => {
+        writer.releaseLock();
+        useMessages.getState().setFileStatus(fileID, "received");
+      })
     },
   }
 }

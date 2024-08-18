@@ -1,6 +1,6 @@
 import { Flex, App } from "antd";
 import { MessageBox } from "./MessageBox";
-import { Connection, ConnectionStatus } from "./connection";
+import { Connection, ConnectionStatus } from "./Connection";
 import { QRCodeBox } from "./QRCodeBox";
 import { useEffect, useState } from "react";
 import { onFileRecv, onPacketRecv } from "./message";
@@ -53,7 +53,6 @@ export const PeerServer = () => {
           <MessageBox
             status={status}
             send={(pkt: Packet) => connection?.send(JSON.stringify(pkt))}
-            recvFile={(fileID: string, fileNo: number, filename: string) => connection?.recvFile(fileID, fileNo, filename)}
           />
         </div>
       )}

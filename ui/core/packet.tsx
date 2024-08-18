@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 
-export type PacketType = "text" | "fileMeta" | "fileRequired";
+export type PacketType = "text" | "fileMeta" | "fileRequired" | "iceCandidate";
 
 export type PacketBase = {
   type: PacketType,
@@ -13,17 +13,19 @@ export type PacketText = PacketBase & {
 
 export type PacketFileMeta = PacketBase & {
   fileID: string,
-  fileNo: number,
   filename: string,
   size: number,
 }
 
 export type PacketFileRequired = PacketBase & {
   fileID: string,
-  fileNo: number,
 }
 
-export type Packet = PacketText | PacketFileMeta | PacketFileRequired;
+export type PacketIceCandidate = PacketBase & {
+  candidate: string,
+}
+
+export type Packet = PacketText | PacketFileMeta | PacketFileRequired | PacketIceCandidate;
 
 export const makeTextPacket = (text: string): PacketText => {
   return {
@@ -33,27 +35,28 @@ export const makeTextPacket = (text: string): PacketText => {
   }
 }
 
-// channel id: unsigned short [0, 65535] 
-const numberGenerator = () => {
-  return Math.floor(Math.random() * 65535);
-}
-
 export const makeFilePacket = (file: File): PacketFileMeta => {
   return {
     type: "fileMeta",
     sendTime: new Date().toISOString(),
     fileID: nanoid(),
-    fileNo: numberGenerator(),
     filename: file.name,
     size: file.size,
   }
 }
 
-export const makeFileRequiredPacket = (fileID: string, fileNo: number): Packet => {
+export const makeFileRequiredPacket = (fileID: string): Packet => {
   return {
     type: "fileRequired",
     sendTime: new Date().toISOString(),
     fileID,
-    fileNo,
+  }
+}
+
+export const makeIceCandidate = (candidate: RTCIceCandidate) => {
+  return {
+    type: "iceCandidate",
+    sendTime: new Date().toISOString(),
+    candidate,
   }
 }

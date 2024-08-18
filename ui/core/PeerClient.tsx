@@ -1,4 +1,4 @@
-import { Connection, ConnectionStatus } from "./connection";
+import { Connection, ConnectionStatus } from "./Connection";
 import { App, Flex } from "antd";
 import { MessageBox } from "./MessageBox";
 import { useEffect, useState } from "react";
@@ -44,7 +44,6 @@ export const PeerClient = (props: ClientPageProps) => {
       <MessageBox
         status={status}
         send={(pkt: Packet) => connection?.send(JSON.stringify(pkt))}
-        recvFile={(fileID: string, fileNo: number, filename: string) => connection?.recvFile(fileID, fileNo, filename)}
       />
     </Flex>
   )

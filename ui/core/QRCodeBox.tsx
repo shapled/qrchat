@@ -2,7 +2,7 @@ import { Button, Flex, Input, QRCode, Space, Tooltip, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { CheckOutlined, CopyOutlined, LinkOutlined } from "@ant-design/icons";
 import Countdown from "antd/es/statistic/Countdown";
-import { ConnectionStatus } from "./connection";
+import { ConnectionStatus } from "./Connection";
 
 export type QRCodeBoxProps = {
   status: ConnectionStatus;

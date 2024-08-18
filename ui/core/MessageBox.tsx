@@ -9,7 +9,7 @@ import { Button, Flex, Modal, Progress, Spin } from "antd"
 import { useRef } from "react";
 import { CheckOutlined, DownloadOutlined, ExclamationCircleFilled, QuestionOutlined } from "@ant-design/icons";
 import { makeFileMetaMessage, makeTextMessage, MessageFile, MessageText, useMessages } from "./message";
-import { ConnectionStatus } from "./connection";
+import { ConnectionStatus } from "./Connection";
 import { makeFilePacket, makeFileRequiredPacket, makeTextPacket, Packet } from "./packet";
 import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
 
@@ -57,9 +57,9 @@ const MessageFileItem = ({ message, onDownload }: MessageFileItemProps) => {
                   onDownload(fileObj?.filename);
                 }} icon={<DownloadOutlined />} />
               ) : fileObj?.status === "downloading" ? (
-                <Progress size={32} type="circle" percent={fileObj?.received * 100 / fileObj?.size} />
+                <Progress size={32} type="circle" percent={Math.floor(fileObj?.received * 100 / fileObj?.size)} />
               ) : fileObj?.status === "received" ? (
-                <Button disabled shape="circle" icon={<CheckOutlined />} />
+                <CheckOutlined />
               ) : <></>}
             </div>
           </Flex>
@@ -72,7 +72,6 @@ const MessageFileItem = ({ message, onDownload }: MessageFileItemProps) => {
 type MessageBoxProps = {
   status: ConnectionStatus;
   send: (packet: Packet) => void;
-  recvFile: (fileID: string, fileNo: number, filename: string) => void;
 }
 
 export const MessageBox = (props: MessageBoxProps) => {
@@ -112,32 +111,30 @@ export const MessageBox = (props: MessageBoxProps) => {
             <MainContainer>
               <ChatContainer>
                 <UIMessageList>
-                  {store.messages.map((message, i) =>  {
-                    switch (message.type) {
-                      case "text":
-                        return (
-                          <UIMessageList.Content key={i}>
-                            <MessageTextItem message={message as MessageText} />
-                          </UIMessageList.Content>
-                        )
-                      case "file":
-                        return (
-                          <UIMessageList.Content key={i}>
-                            <MessageFileItem 
+                  <UIMessageList.Content>
+                    {store.messages.map((message, i) =>  {
+                      switch (message.type) {
+                        case "text":
+                          return (
+                            <MessageTextItem key={i} message={message as MessageText} />
+                          )
+                        case "file":
+                          return (
+                            <MessageFileItem
+                              key={i}
                               message={message as MessageFile} 
                               onDownload={(filename: string) => {
                                 const msg = message as MessageFile;
                                 store.setFileStatus(msg.fileID, "downloading");
-                                props.recvFile(msg.fileID, msg.fileNo, filename);
-                                props.send(makeFileRequiredPacket(msg.fileID, msg.fileNo));
+                                props.send(makeFileRequiredPacket(msg.fileID));
                               }}
                             />
-                          </UIMessageList.Content>
-                        )
-                      default:
-                        return <></>
-                    }
-                  })}
+                          )
+                        default:
+                          return <></>
+                      }
+                    })}
+                  </UIMessageList.Content>
                 </UIMessageList>
                 <UIMessageInput
                   onAttachClick={() => {
